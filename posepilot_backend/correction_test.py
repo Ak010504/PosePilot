@@ -38,5 +38,12 @@ def main():
     except Exception as e:
         print(f"An error occurred: {e}")
 
+    if result["status"] == "success":
+        print("\nFeedback:")
+        for msg in result["feedback"]:
+            print(f"- {msg}")
+
+
+
 if __name__ == "__main__":
     main()

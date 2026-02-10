@@ -92,12 +92,9 @@ def load_model_and_scalers(device, pose):
     tuple
         Loaded model and scalers
     """
-    input_size = 9
-    hidden_size = 256
-    num_layers = 1
-    num_output_features = 9
+    
 
-    model = CorrModel(input_size, hidden_size, num_layers, num_output_features).to(
+    model = CorrModel().to(
         device
     )
     model_path = f"models/{pose}_correction_model.pth"
@@ -402,14 +399,41 @@ def predict_correction_from_dataframe(data, pose):
     dict or None
         Dictionary containing correction data for plotting or None if error
     """
-    print(f"Predicting correction for pose: {pose} from DataFrame")
-    try:
-        # Use return_data=True to get the correction data instead of plotting
-        correction_data = corr_predict(pose, data, return_data=True)
-        return correction_data
-    except Exception as e:
-        print(f"Error in correction prediction from DataFrame: {e}")
-        return {"status": "error", "pose": pose, "error": str(e)}
+    WINDOW_SIZE = 30  # must match training
+
+# after extracting angle_df (shape: T, 9)
+    angles = angle_df.values
+
+    if len(angles) < WINDOW_SIZE:
+        return {
+            "status": "error",
+            "error": f"Not enough frames ({len(angles)}) for window size {WINDOW_SIZE}"
+        }
+
+    # take LAST window only (simulate pause)
+    window = angles[-WINDOW_SIZE:]
+
+    # scale
+    for i, scaler in enumerate(scalers):
+        window[:, i] = scaler.transform(
+            window[:, i].reshape(-1, 1)
+        ).flatten()
+
+    input_tensor = (
+        torch.tensor(window, dtype=torch.float32)
+        .unsqueeze(0)
+        .to(device)
+    )
+
+    with torch.no_grad():
+        correction = model(input_tensor).cpu().numpy()[0]
+
+    # unscale
+    for i, scaler in enumerate(scalers):
+        correction[i] = scaler.inverse_transform(
+            [[correction[i]]]
+        )[0][0]
+
 
 
 def predict_correction_from_csv(csv_path, pose):
