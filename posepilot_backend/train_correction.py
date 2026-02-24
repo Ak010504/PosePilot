@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-TCN-based pose correction training (FIXED).
+TCN-based pose correction training (FIXED + METRICS).
 
 Key changes vs old version:
 - Target = IDEAL angles (NOT last frame)
 - Shorter window for correction
 - Explicit joint supervision (elbows + knees)
 - Per-pose training
+- Added regression metrics: MAE, RMSE, per-joint MAE
 """
 
 # ============================================================
@@ -51,6 +52,14 @@ FEATURE_COLS = [
     "f8", "f9"    # hips
 ]
 
+JOINT_NAMES = [
+    "left_elbow", "right_elbow",
+    "left_shoulder", "right_shoulder",
+    "left_knee", "right_knee",
+    "neck",
+    "left_hip", "right_hip",
+]
+
 # ============================================================
 # IDEAL TARGET ANGLES (DEGREES)
 # ============================================================
@@ -61,6 +70,7 @@ IDEAL_ANGLES = {
     "chair":    [160,160, 150,150, 90,90,  20, 120,120],
     "cobra":    [170,170, 60,60,  180,180, 30, 180,180],
     "downdog":  [170,170, 160,160, 170,170, 20, 200,200],
+    "goddess":  [160,160, 150,150, 120,120, 20, 140,140],
     # ❌ Do NOT include full surya_namaskar here
 }
 
@@ -118,7 +128,6 @@ def fit_global_scalers(all_angle_data):
         scalers.append(scaler)
     return scalers
 
-
 def apply_scalers(df, scalers):
     df = df.copy()
     for i, col in enumerate(FEATURE_COLS):
@@ -156,17 +165,52 @@ def build_sliding_windows(sequences, ideal_target):
     )
 
 # ============================================================
+# METRICS
+# ============================================================
+
+def compute_regression_metrics(preds, targets):
+    """
+    preds, targets: tensors of shape (N, 9) in normalized space.
+    Returns scalar MAE, RMSE.
+    """
+    with torch.no_grad():
+        mae = torch.mean(torch.abs(preds - targets)).item()
+        mse = torch.mean((preds - targets) ** 2).item()
+        rmse = np.sqrt(mse)
+    return mae, rmse
+
+def compute_per_joint_mae(preds, targets):
+    """
+    preds, targets: tensors of shape (N, 9)
+    Returns list of length 9: MAE per feature.
+    """
+    with torch.no_grad():
+        # (N, 9) -> (9,)
+        mae_per_joint = torch.mean(torch.abs(preds - targets), dim=0).cpu().numpy()
+    return mae_per_joint
+
+# ============================================================
 # TRAINING
 # ============================================================
 
-def train_model(model, train_loader, test_loader, epochs, lr):
+def train_model(model, train_loader, test_loader, epochs, lr, pose_name):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
+    history = {
+        "train_loss": [],
+        "test_loss": [],
+        "test_mae": [],
+        "test_rmse": [],
+    }
+
     for epoch in range(epochs):
+        # ------------------
+        # Train
+        # ------------------
         model.train()
         train_loss = 0.0
 
@@ -184,21 +228,52 @@ def train_model(model, train_loader, test_loader, epochs, lr):
 
         train_loss /= len(train_loader)
 
+        # ------------------
+        # Eval
+        # ------------------
         model.eval()
         test_loss = 0.0
+        all_preds = []
+        all_targets = []
+
         with torch.no_grad():
             for X, y in test_loader:
                 X, y = X.to(device), y.to(device)
                 pred = model(X)
+
                 test_loss += criterion(pred, y).item()
+
+                all_preds.append(pred)
+                all_targets.append(y)
 
         test_loss /= len(test_loader)
 
+        # concat predictions/targets for metrics
+        all_preds = torch.cat(all_preds, dim=0)
+        all_targets = torch.cat(all_targets, dim=0)
+
+        mae, rmse = compute_regression_metrics(all_preds, all_targets)
+
+        history["train_loss"].append(train_loss)
+        history["test_loss"].append(test_loss)
+        history["test_mae"].append(mae)
+        history["test_rmse"].append(rmse)
+
         print(
-            f"Epoch {epoch+1:02d}/{epochs} | "
-            f"Train: {train_loss:.6f} | "
-            f"Test: {test_loss:.6f}"
+            f"[{pose_name}] Epoch {epoch+1:02d}/{epochs} | "
+            f"TrainLoss: {train_loss:.6f} | "
+            f"TestLoss: {test_loss:.6f} | "
+            f"Test MAE: {mae:.6f} | "
+            f"Test RMSE: {rmse:.6f}"
         )
+
+    # Final per‑joint MAE on the test set
+    per_joint_mae = compute_per_joint_mae(all_preds, all_targets)
+    print(f"\n[{pose_name}] Final per-joint MAE (normalized units):")
+    for j_name, mae_j in zip(JOINT_NAMES, per_joint_mae):
+        print(f"  - {j_name:15s}: {mae_j:.6f}")
+
+    return history
 
 # ============================================================
 # SAVE
@@ -291,18 +366,18 @@ def main():
             kernel_size=3
         )
 
-        train_model(
+        history = train_model(
             model,
             train_loader,
             test_loader,
             epochs=args.epochs,
             lr=args.lr,
+            pose_name=pose,
         )
 
         save_model_and_scalers(model, scalers, pose, args.output_dir)
 
     print("\n✅ All correction models trained successfully.\n")
-
 
 if __name__ == "__main__":
     main()

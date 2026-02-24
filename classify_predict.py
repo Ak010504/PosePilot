@@ -9,6 +9,7 @@ import warnings
 import pandas as pd
 import numpy as np
 from itertools import combinations
+from pathlib import Path
 from classify_model import ClassifyPose
 from utils import (
     cal_angle,
@@ -18,6 +19,10 @@ from utils import (
     update_body_pose_landmarks,
 )
 
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent   # adjust if needed
+
+MODEL_DIR = PROJECT_ROOT / "models"
 warnings.filterwarnings("ignore")
 
 def feature_classify(data):
@@ -62,10 +67,11 @@ def feature_classify(data):
 
 
 def config_model(
-    model_path="models/pose_classification_model.pth",
-    scaler_path="models/classify_scaler.pkl",
-    mapping_path="models/pose_mapping.pkl",
+    model_path=MODEL_DIR / "pose_classification_model.pth",
+    scaler_path=MODEL_DIR / "classify_scaler.pkl",
+    mapping_path=MODEL_DIR / "pose_mapping.pkl",
 ):
+
     """
     configure the classifier model and load scaler and pose mapping.
     Updated to use dynamic num_classes and sequence_length based on training.
@@ -197,9 +203,9 @@ def predict(data, model, scaler, pose_mapping):
 
 def predict_from_csv(
     csv_path,
-    model_path="models/pose_classification_model.pth",
-    scaler_path="models/classify_scaler.pkl",
-    mapping_path="models/pose_mapping.pkl",
+    model_path=MODEL_DIR / "pose_classification_model.pth",
+    scaler_path=MODEL_DIR / "classify_scaler.pkl",
+    mapping_path=MODEL_DIR / "pose_mapping.pkl",
 ):
     """
     predict pose from a CSV file.
@@ -228,9 +234,9 @@ def predict_from_csv(
 
 def predict_from_dataframe(
     data,
-    model_path="models/pose_classification_model.pth",
-    scaler_path="models/classify_scaler.pkl",
-    mapping_path="models/pose_mapping.pkl",
+    model_path=MODEL_DIR / "pose_classification_model.pth",
+    scaler_path=MODEL_DIR / "classify_scaler.pkl",
+    mapping_path=MODEL_DIR / "pose_mapping.pkl",
 ):
     """
     predict pose from a DataFrame directly.

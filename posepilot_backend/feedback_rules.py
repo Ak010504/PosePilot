@@ -101,22 +101,22 @@ POSE_RULES = {
     # =========================
     "chair": {
         "left_knee": {
-            "threshold": 10,
+            "threshold": 6,
             "positive": "Sit deeper into your left knee",
             "negative": "Ease out of your left knee slightly",
         },
         "right_knee": {
-            "threshold": 10,
+            "threshold": 6,
             "positive": "Sit deeper into your right knee",
             "negative": "Ease out of your right knee slightly",
         },
         "left_hip": {
-            "threshold": 8,
+            "threshold": 5,
             "positive": "Lower your hips slightly",
             "negative": "Lift your hips a little",
         },
         "right_hip": {
-            "threshold": 8,
+            "threshold": 5,
             "positive": "Lower your hips slightly",
             "negative": "Lift your hips a little",
         },

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # ============================================================================
-# PosePilot FastAPI Backend - main.py (CLEAN & FINAL)
+# PosePilot FastAPI Backend - main.py (WITH VOICE FEEDBACK)
 # ============================================================================
 # Responsibilities:
 # - REST + WebSocket API
 # - MediaPipe landmark extraction
 # - Call correction pipeline
+# - Real-time voice feedback
 # ============================================================================
 
 import os
@@ -15,6 +16,7 @@ import pickle
 import tempfile
 import base64
 import logging
+import asyncio
 from pathlib import Path
 
 import numpy as np
@@ -27,9 +29,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from feedback_rules import generate_feedback
 
-
 from classify_model import ClassifyPose
 from correction_predict import predict_correction_from_dataframe
+from voice_feedback import voice_manager  # ✅ NEW IMPORT
 
 # ============================================================================
 # CONFIG
@@ -67,6 +69,7 @@ class ModelState:
     classify_model = None
     classify_scaler = None
     pose_mapping = None
+    voice_enabled = True  # ✅ NEW: voice toggle
 
 state = ModelState()
 
@@ -111,6 +114,13 @@ async def startup():
 
     state.classify_model = model
     logger.info("✅ Classification model loaded")
+    logger.info(f"🎤 Voice feedback: {'enabled' if voice_manager.enabled else 'disabled'}")
+
+# ✅ NEW: Shutdown event
+@app.on_event("shutdown")
+async def shutdown():
+    logger.info("Shutting down voice feedback...")
+    voice_manager.shutdown()
 
 # ============================================================================
 # HELPERS
@@ -180,19 +190,27 @@ async def process_video(video: UploadFile = File(...), pose: str = Form(...)):
                 "feedback": ["Good alignment. Hold the pose."]
             }
 
+        # ✅ NEW: Voice feedback for video processing
+        if state.voice_enabled and result.get("feedback"):
+            await asyncio.to_thread(
+                voice_manager.speak_batch,
+                result["feedback"],
+                max_count=3
+            )
+
         return {
             "status": "success",
             "pose": pose,
             "feedback": result["feedback"],
-            "current_angles": result["current_angles"],
-            "predicted_angles": result["predicted_angles"],
+            "current_angles": result.get("current_angles", {}),
+            "predicted_angles": result.get("predicted_angles", {}),
         }
 
     finally:
         os.remove(tmp.name)
 
 # ============================================================================
-# WEBSOCKET – REAL-TIME CORRECTION
+# WEBSOCKET – REAL-TIME CORRECTION WITH VOICE
 # ============================================================================
 
 @app.websocket("/ws/realtime-correction")
@@ -249,24 +267,65 @@ async def realtime_correction(ws: WebSocket):
             result = predict_correction_from_dataframe(df, pose)
 
             if result["status"] != "success":
-                await ws.send_json({"status": "ok"})
+                await ws.send_json({"status": "ok", "message": result.get("message", "")})
                 continue
 
-            feedback = generate_feedback(
-                pose=pose,
-                current_angles=result["current_angles"],
-                predicted_angles=result["predicted_angles"]
-            )
+            feedback = result.get("feedback", [])
+            
+            if not feedback or feedback == ["Good alignment. Hold the pose."]:
+                await ws.send_json({"status": "ok", "message": "Good alignment"})
+                continue
+
+            # ✅ NEW: Voice feedback (non-blocking)
+            if state.voice_enabled and feedback:
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        voice_manager.speak_batch,
+                        feedback,
+                        max_count=3
+                    )
+                )
 
             await ws.send_json({
                 "status": "feedback",
-                "feedback": feedback
+                "feedback": feedback,
+                "pose": pose,
+                "detected_pose": result.get("detected_pose"),  # for surya_namaskar
             })
-
-
 
     except WebSocketDisconnect:
         logger.info("🔴 WebSocket disconnected")
+        # ✅ NEW: Clear voice queue on disconnect
+        voice_manager.clear_queue()
+
+# ============================================================================
+# VOICE CONTROL API
+# ============================================================================
+
+@app.post("/api/voice/toggle")
+async def toggle_voice():
+    """Toggle voice feedback on/off"""
+    state.voice_enabled = not state.voice_enabled
+    voice_manager.enabled = state.voice_enabled
+    
+    if not state.voice_enabled:
+        voice_manager.clear_queue()
+    
+    logger.info(f"🎤 Voice feedback: {'enabled' if state.voice_enabled else 'disabled'}")
+    
+    return {
+        "voice_enabled": state.voice_enabled,
+        "message": f"Voice feedback {'enabled' if state.voice_enabled else 'disabled'}"
+    }
+
+@app.get("/api/voice/status")
+async def voice_status():
+    """Get current voice feedback status"""
+    return {
+        "voice_enabled": state.voice_enabled,
+        "tts_available": voice_manager.enabled,
+        "is_speaking": voice_manager.is_speaking
+    }
 
 # ============================================================================
 # HEALTH
@@ -276,14 +335,13 @@ async def realtime_correction(ws: WebSocket):
 async def health():
     return {
         "status": "healthy",
-        "device": DEVICE
+        "device": DEVICE,
+        "voice_enabled": state.voice_enabled
     }
 
 @app.get("/api/poses")
 async def get_poses():
-    """
-    Return available yoga poses for frontend dropdown
-    """
+    """Return available yoga poses for frontend dropdown"""
     return {
         "poses": list(state.pose_mapping.keys()),
         "count": len(state.pose_mapping),
@@ -293,11 +351,17 @@ async def get_poses():
         }
     }
 
-
 # ============================================================================
 # ENTRY
 # ============================================================================
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    uvicorn.run(
+        "main:app", 
+        host="0.0.0.0", 
+        port=8001,
+        ws_ping_interval=20,      # ✅ Prevent WebSocket timeout
+        ws_ping_timeout=20,
+        timeout_keep_alive=300
+    )
